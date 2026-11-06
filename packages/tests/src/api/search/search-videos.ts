@@ -663,6 +663,167 @@ describe('Test videos search', function () {
     })
   })
 
+  describe('Quoted alphanumeric searches', function () {
+    const cases = [
+      {
+        term: 'ESP32',
+        exactTitle: 'ESP32 tutorial',
+        prefixedTitle: 'ESP32S3 tutorial',
+        unrelatedTitle: 'ESP8266 tutorial'
+      },
+      {
+        term: 'M5Stack',
+        exactTitle: 'M5Stack tutorial',
+        prefixedTitle: 'M5StackPlus tutorial',
+        unrelatedTitle: 'Stack tutorial'
+      }
+    ]
+
+    before(async function () {
+      this.timeout(120000)
+
+      for (const testCase of cases) {
+        const names = [
+          testCase.exactTitle,
+          testCase.prefixedTitle,
+          testCase.unrelatedTitle
+        ]
+
+        for (const name of names) {
+          await server.videos.upload({
+            attributes: {
+              name,
+              fixture: 'video_short.mp4',
+              description: 'Neutral fixture content.',
+              tags: [],
+              privacy: VideoPrivacy.PUBLIC,
+              nsfw: false
+            }
+          })
+        }
+      }
+    })
+
+    for (const testCase of cases) {
+      it(`Should preserve prefix matching for unquoted ${testCase.term}`, async function () {
+        const body = await command.advancedVideoSearch({
+          search: {
+            search: testCase.term,
+            searchTarget: 'local',
+            count: 100
+          }
+        })
+
+        const names = body.data.map(video => video.name)
+
+        expect(names).to.include.members([
+          testCase.exactTitle,
+          testCase.prefixedTitle
+        ])
+      })
+
+      it(`Should only match the complete word for "${testCase.term}"`, async function () {
+        const body = await command.advancedVideoSearch({
+          search: {
+            search: `"${testCase.term}"`,
+            searchTarget: 'local',
+            count: 100
+          }
+        })
+
+        const names = body.data.map(video => video.name)
+
+        expect(names).to.deep.equal([ testCase.exactTitle ])
+        expect(body.total).to.equal(1)
+      })
+    }
+  })
+
+  describe('Quoted search edge cases', function () {
+    before(async function () {
+      this.timeout(120000)
+
+      const videos = [
+        {
+          name: 'Quoted description exact fixture',
+          description: 'A guide about desc7843.',
+          tags: []
+        },
+        {
+          name: 'Quoted description prefix fixture',
+          description: 'A guide about desc7843plus.',
+          tags: []
+        },
+        {
+          name: 'Quoted tag exact fixture',
+          description: 'Neutral fixture content.',
+          tags: [ 'tag7843' ]
+        },
+        {
+          name: 'Quoted tag prefix fixture',
+          description: 'Neutral fixture content.',
+          tags: [ 'tag7843plus' ]
+        }
+      ]
+
+      for (const video of videos) {
+        await server.videos.upload({
+          attributes: {
+            ...video,
+            fixture: 'video_short.mp4',
+            privacy: VideoPrivacy.PUBLIC,
+            nsfw: false
+          }
+        })
+      }
+    })
+
+    const cases = [
+      {
+        name: 'Should match a complete word found only in the description',
+        search: '"desc7843"',
+        expectedNames: [ 'Quoted description exact fixture' ]
+      },
+      {
+        name: 'Should match a complete tag regardless of case and exclude tag prefixes',
+        search: '"TAG7843"',
+        expectedNames: [ 'Quoted tag exact fixture' ]
+      },
+      {
+        name: 'Should ignore case in quoted full text searches',
+        search: '"DESC7843"',
+        expectedNames: [ 'Quoted description exact fixture' ]
+      },
+      {
+        name: 'Should accept whitespace around a quoted word',
+        search: '  "desc7843"  ',
+        expectedNames: [ 'Quoted description exact fixture' ]
+      },
+      {
+        name: 'Should return no result for an unknown quoted word',
+        search: '"zzznomatch7843"',
+        expectedNames: []
+      }
+    ]
+
+    for (const testCase of cases) {
+      it(testCase.name, async function () {
+        const body = await command.advancedVideoSearch({
+          search: {
+            search: testCase.search,
+            searchTarget: 'local',
+            count: 100
+          }
+        })
+
+        const names = body.data.map(video => video.name)
+
+        expect(names).to.deep.equal(testCase.expectedNames)
+        expect(body.total).to.equal(testCase.expectedNames.length)
+      })
+    }
+  })
+
   after(async function () {
     await cleanupTests([ server, remoteServer ])
   })

@@ -29,12 +29,12 @@ const TS_RANK_NAME_MATCH = 0.61
 // to_tsquery() parses its argument as a tsquery expression: `&`, `|`, `!`, `<->`, parentheses and `:` weight markers
 // So raw user input like "rock & roll", "hello!" or "12:30" makes it throw a syntax error
 // Returns '' when the search holds no lexeme at all
-function buildTSQueryTerms (search: string) {
+function buildTSQueryTerms (search: string, exactMatch = false) {
   return search
     .replace(/[^\p{L}\p{N}_]/gu, ' ')
     .split(/\s+/)
     .filter(term => term.length !== 0)
-    .map(term => `${term}:*`)
+    .map(term => exactMatch ? term : `${term}:*`)
     .join(' & ')
 }
 
@@ -867,11 +867,17 @@ export class VideosIdListQueryBuilder extends AbstractRunQuery {
       return
     }
 
-    const escapedSearch = this.sequelize.escape(search)
+    // Handle searches consisting of a single quoted alphanumeric word.
+    const quotedTerm = /^\s*"([\p{L}\p{N}]+)"\s*$/u.exec(search)?.[1]
+    const isExactSearch = quotedTerm !== undefined
+    const searchValue = quotedTerm ?? search
+
+    const escapedSearch = this.sequelize.escape(searchValue)
     const escapedLikeSearch = this.sequelize.escape('%' + search + '%')
 
+
     // A search made only of punctuation ("!!!", "...") has no lexeme to look for: skip the full text search
-    const tsQueryTerms = buildTSQueryTerms(search)
+    const tsQueryTerms = buildTSQueryTerms(searchValue, isExactSearch)
     const hasFTS = tsQueryTerms !== ''
 
     if (hasFTS) {
@@ -890,6 +896,33 @@ export class VideosIdListQueryBuilder extends AbstractRunQuery {
       )
 
       this.joins.push('LEFT JOIN "ftsSearch" ON "video"."id" = "ftsSearch"."id"')
+    }
+
+    if (isExactSearch) {
+      // Require a full-text match or an exact tag match.
+      // Do not fall back to approximate title matching.
+      this.and.push(`(
+        "ftsSearch"."id" IS NOT NULL
+        OR EXISTS (
+          SELECT 1
+          FROM "videoTag"
+          JOIN "tag" ON "tag"."id" = "videoTag"."tagId"
+          WHERE "videoTag"."videoId" = "video"."id"
+            AND lower("tag"."name") = lower(${escapedSearch})
+        )
+      )`)
+
+      if (!isCount) {
+        let similarity = 'COALESCE("ftsSearch"."similarity", 0)'
+
+        if (this.group) {
+          similarity = `AVG(${similarity})`
+        }
+
+        this.attributes.push(`${similarity} as similarity`)
+      }
+
+      return
     }
 
     this.cte.push(
